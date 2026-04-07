@@ -1,0 +1,10 @@
+{
+  "watch": ["src", "homebridge-ui"],
+  "ext": "ts,js,html",
+  "ignore": [],
+  "exec": "tsc && node ~/.homebridge/node_modules/homebridge-config-ui-x/dist/bin/standalone.js -U ~/.homebridge-appletv -P /Users/removetere/Development/homebridge-appletv-powerstate/node_modules -I & homebridge -U ~/.homebridge-appletv/ -P ~/.homebridge/node_modules -D -I",
+  "signal": "SIGTERM",
+  "env": {
+    "NODE_OPTIONS": "--trace-warnings"
+  }
+}

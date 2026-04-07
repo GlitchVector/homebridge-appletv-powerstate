@@ -1,0 +1,241 @@
+<style>
+  #app .text-muted { color: #adb5bd !important; }
+  #app code { color: #e685ff; }
+  #app .list-group-item { background-color: transparent; color: inherit; border-color: rgba(255,255,255,0.15); }
+  #app .list-group-item strong { color: #fff; }
+  #app .list-group-item .text-muted { color: #9e9e9e !important; }
+  #app .card { background-color: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.15); }
+  #app .card-header { border-color: rgba(255,255,255,0.15); }
+  #app .alert-warning { background-color: rgba(255,193,7,0.15); color: #ffc107; border-color: rgba(255,193,7,0.3); }
+  #app .alert-danger { background-color: rgba(220,53,69,0.15); color: #ff6b7a; border-color: rgba(220,53,69,0.3); }
+  #app .alert-info { background-color: rgba(13,202,240,0.15); color: #0dcaf0; border-color: rgba(13,202,240,0.3); }
+  #app .form-control { background-color: rgba(255,255,255,0.1); color: #fff; border-color: rgba(255,255,255,0.2); }
+  #app .form-control::placeholder { color: #888; }
+  #app textarea.form-control { background-color: rgba(255,255,255,0.1); color: #ccc; }
+  #app .bg-success { background-color: #198754 !important; }
+</style>
+
+<div id="app">
+
+  <!-- Scan Section -->
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="mb-0">Apple TV Discovery</h5>
+      <button class="btn btn-primary btn-sm" id="scanBtn" onclick="scanDevices()">
+        Scan Network
+      </button>
+    </div>
+    <div class="card-body">
+      <p class="text-muted mb-2">
+        Scan your local network for Apple TV devices. Make sure <code>pyatv</code> is installed: <code>pip3 install pyatv</code>
+      </p>
+      <div id="scanResults"></div>
+    </div>
+  </div>
+
+  <!-- Pairing Section (hidden until pair is clicked) -->
+  <div class="card mb-3" id="pairingCard" style="display: none;">
+    <div class="card-header">
+      <h5 class="mb-0">Pair with <span id="pairingDeviceName"></span></h5>
+    </div>
+    <div class="card-body">
+      <div id="pairingStatus">
+        <div class="d-flex align-items-center mb-3">
+          <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+          <span>Initiating pairing... Check your Apple TV screen for a PIN code.</span>
+        </div>
+      </div>
+
+      <div id="pinEntry" style="display: none;">
+        <p>Enter the PIN code displayed on your Apple TV:</p>
+        <div class="input-group mb-3" style="max-width: 300px;">
+          <input type="text" class="form-control" id="pinInput" placeholder="0000" maxlength="4" pattern="[0-9]*" inputmode="numeric">
+          <button class="btn btn-success" onclick="submitPin()">Submit PIN</button>
+        </div>
+      </div>
+
+      <div id="pairingResult" style="display: none;"></div>
+
+      <button class="btn btn-outline-secondary btn-sm mt-2" onclick="cancelPairing()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Credentials Section -->
+  <div class="card mb-3" id="credentialsCard" style="display: none;">
+    <div class="card-header bg-success text-white">
+      <h5 class="mb-0">Pairing Successful</h5>
+    </div>
+    <div class="card-body">
+      <p>Credentials obtained for <strong id="pairedDeviceName"></strong>:</p>
+      <div class="mb-3">
+        <textarea class="form-control" id="credentialsOutput" rows="3" readonly></textarea>
+      </div>
+      <button class="btn btn-primary" onclick="saveCredentials()">Save to Config</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  let currentPairingIp = null;
+  let currentPairingName = null;
+
+  async function scanDevices() {
+    const btn = document.getElementById('scanBtn');
+    const results = document.getElementById('scanResults');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    results.innerHTML = '<div class="d-flex align-items-center"><div class="spinner-border spinner-border-sm me-2"></div>Scanning network...</div>';
+
+    try {
+      const response = await homebridge.request('/scan');
+      const devices = response.devices || [];
+
+      if (devices.length === 0) {
+        results.innerHTML = '<div class="alert alert-warning mb-0">No Apple TV devices found on the network.</div>';
+      } else {
+        let html = '<div class="list-group">';
+        for (const device of devices) {
+          html += `
+            <div class="list-group-item d-flex justify-content-between align-items-center">
+              <div>
+                <strong>${escapeHtml(device.name)}</strong>
+                <br><small class="text-muted">${escapeHtml(device.ip)}${device.model ? ' &mdash; ' + escapeHtml(device.model) : ''}${device.os ? ' (' + escapeHtml(device.os) + ')' : ''}</small>
+              </div>
+              <button class="btn btn-outline-primary btn-sm" onclick="startPairing('${escapeHtml(device.ip)}', '${escapeHtml(device.name)}')">
+                Pair
+              </button>
+            </div>
+          `;
+        }
+        html += '</div>';
+        results.innerHTML = html;
+      }
+    } catch (error) {
+      results.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Scan Network';
+    }
+  }
+
+  async function startPairing(ip, name) {
+    currentPairingIp = ip;
+    currentPairingName = name;
+
+    document.getElementById('pairingCard').style.display = '';
+    document.getElementById('pairingDeviceName').textContent = name;
+    document.getElementById('pairingStatus').style.display = '';
+    document.getElementById('pinEntry').style.display = 'none';
+    document.getElementById('pairingResult').style.display = 'none';
+    document.getElementById('credentialsCard').style.display = 'none';
+
+    // Listen for pairing status events
+    homebridge.addEventListener('pairing-status', onPairingStatus);
+
+    try {
+      const response = await homebridge.request('/pair', { ip });
+
+      if (response.success && response.credentials) {
+        showCredentials(name, response.credentials);
+      } else if (response.success && response.output) {
+        document.getElementById('pairingResult').style.display = '';
+        document.getElementById('pairingResult').innerHTML =
+          `<div class="alert alert-info">Pairing completed. Output:<br><pre>${escapeHtml(response.output)}</pre></div>`;
+      }
+    } catch (error) {
+      document.getElementById('pairingResult').style.display = '';
+      document.getElementById('pairingResult').innerHTML =
+        `<div class="alert alert-danger">${escapeHtml(error.message)}</div>`;
+      document.getElementById('pairingStatus').style.display = 'none';
+    }
+
+    homebridge.removeEventListener('pairing-status', onPairingStatus);
+  }
+
+  function onPairingStatus(event) {
+    if (event.data && event.data.status === 'pin-requested') {
+      document.getElementById('pairingStatus').style.display = 'none';
+      document.getElementById('pinEntry').style.display = '';
+      document.getElementById('pinInput').focus();
+    }
+  }
+
+  async function submitPin() {
+    const pin = document.getElementById('pinInput').value.trim();
+    if (!pin) return;
+
+    document.getElementById('pinEntry').style.display = 'none';
+    document.getElementById('pairingStatus').style.display = '';
+    document.getElementById('pairingStatus').innerHTML =
+      '<div class="d-flex align-items-center"><div class="spinner-border spinner-border-sm me-2"></div>Verifying PIN...</div>';
+
+    try {
+      await homebridge.request('/pin', { pin });
+      // The /pair request will resolve with credentials
+    } catch (error) {
+      document.getElementById('pairingResult').style.display = '';
+      document.getElementById('pairingResult').innerHTML =
+        `<div class="alert alert-danger">PIN submission failed: ${escapeHtml(error.message)}</div>`;
+    }
+  }
+
+  function showCredentials(name, credentials) {
+    document.getElementById('pairingCard').style.display = 'none';
+    document.getElementById('credentialsCard').style.display = '';
+    document.getElementById('pairedDeviceName').textContent = name;
+    document.getElementById('credentialsOutput').value = credentials;
+  }
+
+  async function saveCredentials() {
+    const credentials = document.getElementById('credentialsOutput').value;
+    if (!credentials || !currentPairingIp) return;
+
+    try {
+      const config = await homebridge.getPluginConfig();
+      let pluginConfig = config[0] || { platform: 'AppleTvPowerState', devices: [] };
+
+      if (!pluginConfig.devices) {
+        pluginConfig.devices = [];
+      }
+
+      // Find existing device by IP or add new one
+      const existingIndex = pluginConfig.devices.findIndex((d) => d.ip === currentPairingIp);
+      if (existingIndex >= 0) {
+        pluginConfig.devices[existingIndex].credentials = credentials;
+      } else {
+        pluginConfig.devices.push({
+          name: currentPairingName || 'Apple TV',
+          ip: currentPairingIp,
+          credentials: credentials,
+        });
+      }
+
+      config[0] = pluginConfig;
+      await homebridge.updatePluginConfig(config);
+      await homebridge.savePluginConfig();
+
+      homebridge.toast.success('Credentials saved to config!', 'Success');
+    } catch (error) {
+      homebridge.toast.error(`Failed to save: ${error.message}`, 'Error');
+    }
+  }
+
+  async function cancelPairing() {
+    try {
+      await homebridge.request('/cancel-pair');
+    } catch (e) {
+      // ignore
+    }
+    document.getElementById('pairingCard').style.display = 'none';
+    currentPairingIp = null;
+    currentPairingName = null;
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+</script>

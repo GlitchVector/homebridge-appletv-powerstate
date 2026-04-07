@@ -1,0 +1,59 @@
+{
+  "pluginAlias": "AppleTvPowerState",
+  "pluginType": "platform",
+  "singular": true,
+  "customUi": true,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Apple TV Powerstate Platform"
+      },
+      "platform": {
+        "type": "string",
+        "default": "AppleTvPowerState"
+      },
+      "devices": {
+        "title": "Devices",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string",
+              "required": true,
+              "default": "Apple TV"
+            },
+            "ip": {
+              "title": "Apple TV IP Address",
+              "type": "string",
+              "required": true
+            },
+            "credentials": {
+              "title": "Companion Credentials",
+              "type": "string",
+              "description": "Credentials from pyatv pairing. Use the Custom UI to pair your Apple TV."
+            },
+            "pollingInterval": {
+              "title": "Polling Interval (seconds)",
+              "type": "integer",
+              "default": 10,
+              "minimum": 3,
+              "description": "How often to check the Apple TV power state (seconds)"
+            },
+            "debounceDuration": {
+              "title": "Debounce Duration (seconds)",
+              "type": "integer",
+              "default": 5,
+              "minimum": 1,
+              "description": "Seconds to wait before confirming a state change"
+            }
+          }
+        }
+      }
+    }
+  }
+}

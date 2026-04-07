@@ -1,0 +1,50 @@
+{
+  "name": "homebridge-appletv-powerstate",
+  "displayName": "Homebridge Apple TV Powerstate",
+  "type": "module",
+  "version": "2.0.0",
+  "description": "A homebridge plugin to detect the power state of an Apple TV using pyatv",
+  "author": "Remo Vetere <remo.vetere@gmail.com>",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/rocket-monkey/homebridge-appletv-powerstate#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rocket-monkey/homebridge-appletv-powerstate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rocket-monkey/homebridge-appletv-powerstate/issues"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "appletv",
+    "apple-tv",
+    "pyatv"
+  ],
+  "main": "dist/index.js",
+  "engines": {
+    "node": "^18.20.4 || ^20.18.0 || ^22.10.0 || ^24.13.0",
+    "homebridge": "^1.8.0 || ^2.0.0-beta.0"
+  },
+  "scripts": {
+    "lint": "eslint src/**.ts --max-warnings=0",
+    "lint:fix": "eslint src/**.ts --fix",
+    "build": "rimraf ./dist && tsc",
+    "prepublishOnly": "npm run lint && npm run build",
+    "watch": "npm run build && npm link && nodemon"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "@types/eslint__js": "^8.42.3",
+    "@types/node": "^22.13.4",
+    "eslint": "^9.20.1",
+    "homebridge": "^2.0.0-beta.0",
+    "nodemon": "^3.1.9",
+    "rimraf": "^6.0.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.0"
+  },
+  "dependencies": {
+    "@homebridge/plugin-ui-utils": "^1.0.0"
+  }
+}
