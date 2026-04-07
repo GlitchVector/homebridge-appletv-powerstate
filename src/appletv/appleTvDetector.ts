@@ -13,6 +13,7 @@ export class AppleTvDetector extends EventEmitter {
   private debouncedState: boolean | null = null;
   private isFirstPoll = true;
   private pyatvMissing = false;
+  private consecutiveErrors = 0;
 
   constructor(
     private readonly ip: string,
@@ -73,12 +74,21 @@ export class AppleTvDetector extends EventEmitter {
             this.pyatvMissing = true;
             return;
           }
-          this.log.warn(`Failed to poll Apple TV power state: ${error.message}`);
-          if (stderr?.trim()) {
-            this.log.debug(`atvremote stderr: ${stderr.trim()}`);
+          this.consecutiveErrors++;
+          // Only log on first error and then every 20th to avoid flooding
+          if (this.consecutiveErrors === 1) {
+            this.log.warn(`Apple TV ${this.ip} unreachable (will retry silently)`);
+          } else if (this.consecutiveErrors % 20 === 0) {
+            this.log.warn(`Apple TV ${this.ip} still unreachable (${this.consecutiveErrors} consecutive failures)`);
           }
+          this.log.debug(`atvremote error: ${error.message}`);
           // Fail-safe: keep last known state
           return;
+        }
+
+        if (this.consecutiveErrors > 0) {
+          this.log.info(`Apple TV ${this.ip} reachable again after ${this.consecutiveErrors} failures`);
+          this.consecutiveErrors = 0;
         }
 
         const output = stdout.trim();
