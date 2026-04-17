@@ -165,7 +165,7 @@ def main() -> int:
     parser.add_argument(
         "--refresh-seconds",
         type=float,
-        default=10.0,
+        default=2.0,
         help="Interval between forced reconnects that re-read live power state",
     )
     args = parser.parse_args()
