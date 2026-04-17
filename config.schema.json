@@ -37,13 +37,6 @@
               "type": "string",
               "description": "Credentials from pyatv pairing. Use the Custom UI to pair your Apple TV."
             },
-            "pollingInterval": {
-              "title": "Polling Interval (seconds)",
-              "type": "integer",
-              "default": 10,
-              "minimum": 3,
-              "description": "How often to check the Apple TV power state (seconds)"
-            },
             "debounceDuration": {
               "title": "Debounce Duration (seconds)",
               "type": "integer",

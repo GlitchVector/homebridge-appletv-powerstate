@@ -1,24 +1,43 @@
 import { EventEmitter } from "events";
-import { execFile, type ChildProcess } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
+import { createInterface, type Interface as ReadlineInterface } from "readline";
+import { fileURLToPath } from "url";
+import path from "path";
 import type { Logging } from "homebridge";
 
 export interface AppleTvStateChange {
   isPoweredOn: boolean;
 }
 
+interface DaemonEvent {
+  state?: "on" | "off" | "unknown";
+  reason?: string;
+  error?: string;
+}
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Compiled location: dist/appletv/appleTvDetector.js
+// Daemon source:     python/atv_power_daemon.py (sibling of dist/)
+const DAEMON_PATH = path.resolve(__dirname, "..", "..", "python", "atv_power_daemon.py");
+
+const INITIAL_BACKOFF_MS = 1_000;
+const MAX_BACKOFF_MS = 60_000;
+
 export class AppleTvDetector extends EventEmitter {
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private daemon: ChildProcess | null = null;
+  private readlineIface: ReadlineInterface | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private currentProcess: ChildProcess | null = null;
+  private respawnTimer: ReturnType<typeof setTimeout> | null = null;
   private debouncedState: boolean | null = null;
-  private isFirstPoll = true;
-  private pyatvMissing = false;
-  private consecutiveErrors = 0;
+  private pythonMissing = false;
+  private stopped = false;
+  private backoffMs = INITIAL_BACKOFF_MS;
+  private haveInitialState = false;
+  private lastLoggedError: string | null = null;
 
   constructor(
     private readonly ip: string,
     private readonly credentials: string | undefined,
-    private readonly pollingInterval: number,
     private readonly debounceDuration: number,
     private readonly log: Logging,
   ) {
@@ -26,96 +45,151 @@ export class AppleTvDetector extends EventEmitter {
   }
 
   start(): void {
-    this.log.info(`Starting Apple TV power state detection for ${this.ip} (poll: ${this.pollingInterval / 1000}s, debounce: ${this.debounceDuration / 1000}s)`);
-    this.pollPowerState();
-    this.pollTimer = setInterval(() => this.pollPowerState(), this.pollingInterval);
+    this.log.info(
+      `Starting Apple TV power state detection for ${this.ip} (push-based via pyatv daemon, debounce: ${this.debounceDuration / 1000}s)`,
+    );
+    this.stopped = false;
+    this.spawnDaemon();
   }
 
   stop(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
+    this.stopped = true;
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
-    if (this.currentProcess) {
-      this.currentProcess.kill();
-      this.currentProcess = null;
+    if (this.respawnTimer) {
+      clearTimeout(this.respawnTimer);
+      this.respawnTimer = null;
+    }
+    this.teardownDaemon();
+  }
+
+  private teardownDaemon(): void {
+    if (this.readlineIface) {
+      this.readlineIface.close();
+      this.readlineIface = null;
+    }
+    if (this.daemon) {
+      this.daemon.removeAllListeners();
+      this.daemon.kill();
+      this.daemon = null;
     }
   }
 
-  private pollPowerState(): void {
-    if (this.pyatvMissing) {
-      return;
-    }
+  private spawnDaemon(): void {
+    if (this.pythonMissing || this.stopped || this.daemon) return;
 
-    // Don't start a new poll if one is still running
-    if (this.currentProcess) {
-      return;
-    }
-
-    const args = ["-s", this.ip];
+    const args: string[] = ["-u", DAEMON_PATH, "--ip", this.ip];
     if (this.credentials) {
       args.push("--companion-credentials", this.credentials);
     }
-    args.push("power_state");
 
-    const timeout = 10_000;
+    this.log.debug(`Spawning pyatv daemon: python3 ${args.join(" ")}`);
 
+    let proc: ChildProcess;
     try {
-      this.currentProcess = execFile("atvremote", args, { timeout }, (error, stdout, stderr) => {
-        this.currentProcess = null;
-
-        if (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            this.log.error("atvremote not found -- install pyatv: pip3 install pyatv");
-            this.pyatvMissing = true;
-            return;
-          }
-          this.consecutiveErrors++;
-          // Only log on first error and then every 20th to avoid flooding
-          if (this.consecutiveErrors === 1) {
-            this.log.warn(`Apple TV ${this.ip} unreachable (will retry silently)`);
-          } else if (this.consecutiveErrors % 20 === 0) {
-            this.log.warn(`Apple TV ${this.ip} still unreachable (${this.consecutiveErrors} consecutive failures)`);
-          }
-          this.log.debug(`atvremote error: ${error.message}`);
-          // Fail-safe: keep last known state
-          return;
-        }
-
-        if (this.consecutiveErrors > 0) {
-          this.log.info(`Apple TV ${this.ip} reachable again after ${this.consecutiveErrors} failures`);
-          this.consecutiveErrors = 0;
-        }
-
-        const output = stdout.trim();
-        const isPoweredOn = output.includes("PowerState.On");
-
-        if (this.isFirstPoll) {
-          this.isFirstPoll = false;
-          this.log.info(`Apple TV ${this.ip} initial power state: ${isPoweredOn ? "On" : "Off"} (raw: ${output})`);
-        }
-
-        this.applyDebounce(isPoweredOn);
+      proc = spawn("python3", args, {
+        stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
-      this.currentProcess = null;
-      this.log.error(`Failed to spawn atvremote: ${err}`);
+      this.log.error(`Failed to spawn pyatv daemon: ${String(err)}`);
+      this.scheduleRespawn();
+      return;
+    }
+
+    this.daemon = proc;
+
+    proc.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") {
+        this.log.error(
+          "python3 not found -- install Python 3 and pyatv in the homebridge environment",
+        );
+        this.pythonMissing = true;
+        return;
+      }
+      this.log.error(`pyatv daemon spawn error: ${err.message}`);
+    });
+
+    if (proc.stdout) {
+      this.readlineIface = createInterface({ input: proc.stdout });
+      this.readlineIface.on("line", (line) => this.handleLine(line));
+    }
+
+    if (proc.stderr) {
+      proc.stderr.on("data", (buf: Buffer) => {
+        const text = buf.toString().trim();
+        if (text) this.log.debug(`pyatv daemon stderr: ${text}`);
+      });
+    }
+
+    proc.on("exit", (code, signal) => {
+      if (!this.stopped) {
+        this.log.warn(
+          `pyatv daemon for ${this.ip} exited (code=${code} signal=${signal}); will respawn`,
+        );
+      }
+      if (this.readlineIface) {
+        this.readlineIface.close();
+        this.readlineIface = null;
+      }
+      this.daemon = null;
+      this.scheduleRespawn();
+    });
+  }
+
+  private scheduleRespawn(): void {
+    if (this.stopped || this.pythonMissing || this.respawnTimer) return;
+    this.respawnTimer = setTimeout(() => {
+      this.respawnTimer = null;
+      this.spawnDaemon();
+    }, this.backoffMs);
+    this.backoffMs = Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
+  }
+
+  private handleLine(line: string): void {
+    if (!line.trim()) return;
+
+    let event: DaemonEvent;
+    try {
+      event = JSON.parse(line) as DaemonEvent;
+    } catch {
+      this.log.debug(`pyatv daemon: unparseable line: ${line}`);
+      return;
+    }
+
+    if (event.error) {
+      const msg = event.error;
+      if (this.lastLoggedError !== msg) {
+        this.log.warn(`Apple TV ${this.ip} ${event.reason ?? "error"}: ${msg}`);
+        this.lastLoggedError = msg;
+      }
+      return;
+    }
+
+    if (event.state === "on" || event.state === "off") {
+      // any valid event means the daemon+connection are healthy → reset backoff
+      this.backoffMs = INITIAL_BACKOFF_MS;
+      this.lastLoggedError = null;
+
+      const isPoweredOn = event.state === "on";
+      if (!this.haveInitialState) {
+        this.haveInitialState = true;
+        this.log.info(
+          `Apple TV ${this.ip} initial power state: ${isPoweredOn ? "On" : "Off"} (${event.reason ?? "unknown"})`,
+        );
+      }
+      this.applyDebounce(isPoweredOn);
     }
   }
 
   private applyDebounce(newState: boolean): void {
-    // If this is the first state we've seen, emit immediately
     if (this.debouncedState === null) {
       this.debouncedState = newState;
       this.emit("stateChange", { isPoweredOn: newState } satisfies AppleTvStateChange);
       return;
     }
 
-    // If state hasn't changed, clear any pending debounce
     if (newState === this.debouncedState) {
       if (this.debounceTimer) {
         clearTimeout(this.debounceTimer);
@@ -124,7 +198,6 @@ export class AppleTvDetector extends EventEmitter {
       return;
     }
 
-    // State changed -- start/reset debounce timer
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
@@ -132,7 +205,9 @@ export class AppleTvDetector extends EventEmitter {
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
       this.debouncedState = newState;
-      this.log.debug(`Apple TV ${this.ip} debounced state change: ${newState ? "On" : "Off"}`);
+      this.log.debug(
+        `Apple TV ${this.ip} debounced state change: ${newState ? "On" : "Off"}`,
+      );
       this.emit("stateChange", { isPoweredOn: newState } satisfies AppleTvStateChange);
     }, this.debounceDuration);
   }

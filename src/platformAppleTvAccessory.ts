@@ -29,7 +29,6 @@ export class PlatformAppleTvAccessory {
     const detector = new AppleTvDetector(
       device.ip,
       device.credentials,
-      (device.pollingInterval || 10) * 1000,
       (device.debounceDuration || 5) * 1000,
       this.platform.log,
     );
