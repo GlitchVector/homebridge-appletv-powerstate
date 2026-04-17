@@ -2,7 +2,7 @@
   "name": "homebridge-appletv-powerstate",
   "displayName": "Homebridge Apple TV Powerstate",
   "type": "module",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "A homebridge plugin to detect the power state of an Apple TV using pyatv",
   "files": [
     "dist",
