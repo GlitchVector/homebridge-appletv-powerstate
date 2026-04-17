@@ -47,7 +47,7 @@ export class AppleTvDetector extends EventEmitter {
 
   start(): void {
     this.log.info(
-      `Starting Apple TV power state detection for ${this.ip} (push-based via pyatv daemon, flap-guard: ${this.debounceDuration / 1000}s)`,
+      `Starting Apple TV power state detection for ${this.ip} (via pyatv daemon, flap-guard: ${this.debounceDuration / 1000}s)`,
     );
     this.stopped = false;
     this.spawnDaemon();

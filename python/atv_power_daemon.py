@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """
-Long-lived pyatv daemon that keeps a Companion-protocol session open to an
-Apple TV and emits power-state changes as newline-delimited JSON on stdout.
+pyatv Apple TV power-state daemon.
 
-Each event line is one JSON object, e.g.:
-    {"state": "on",  "reason": "initial"}
-    {"state": "off", "reason": "push"}
-    {"error": "connection_lost: ...", "reason": "connection_lost"}
+Emits newline-delimited JSON events on stdout:
+    {"state": "on"|"off", "reason": "initial"|"push"|"refresh"}
+    {"error": "...", "reason": "..."}
 
-The Node plugin side spawns this once per device and tails stdout; there is
-no per-poll process fork and no per-poll TLS handshake.
+On tvOS 15+ with Companion-only pairing, pyatv's cached ``power.power_state``
+is populated at connect time and is not refreshed reliably — the push
+listener fires only on some transitions. A long-running connection ends up
+reporting the initial state forever. To guarantee freshness we force a
+reconnect on every refresh cycle: a fresh connection always reads the
+current state correctly. The push listener stays installed so transitions
+that *do* emit push are still caught instantly.
+
+The daemon is one long-lived Python process (no per-poll fork, no pyatv
+import overhead between cycles), so this is much cheaper than the original
+"spawn-per-poll" approach even though connections are short.
 """
 
 import argparse
@@ -39,24 +46,17 @@ def state_label(state: PowerState) -> str:
 
 
 class _PowerPushListener(PowerListener):
-    def __init__(self, daemon: "Daemon") -> None:
-        self._daemon = daemon
-
     def powerstate_update(self, old_state: PowerState, new_state: PowerState) -> None:
         emit({"state": state_label(new_state), "reason": "push"})
 
 
-class _DevicePushListener(DeviceListener):
-    def __init__(self, daemon: "Daemon") -> None:
-        self._daemon = daemon
-
+class _DeviceNoopListener(DeviceListener):
+    # Required interface; we recover via the refresh loop rather than callbacks.
     def connection_lost(self, exception: Optional[Exception]) -> None:
         emit({"error": f"connection_lost: {exception}", "reason": "connection_lost"})
-        self._daemon.schedule_reconnect()
 
     def connection_closed(self) -> None:
-        emit({"error": "connection_closed", "reason": "connection_closed"})
-        self._daemon.schedule_reconnect()
+        pass
 
 
 class Daemon:
@@ -64,19 +64,18 @@ class Daemon:
         self,
         ip: str,
         companion_credentials: Optional[str],
-        heartbeat_seconds: float,
+        refresh_seconds: float,
     ) -> None:
         self._ip = ip
         self._companion_credentials = companion_credentials
-        self._heartbeat_seconds = heartbeat_seconds
+        self._refresh_seconds = refresh_seconds
         self._atv: Optional[AppleTV] = None
-        self._reconnect_event = asyncio.Event()
-        self._backoff = 1.0
+        self._stop_event = asyncio.Event()
 
-    def schedule_reconnect(self) -> None:
-        self._reconnect_event.set()
+    def request_stop(self) -> None:
+        self._stop_event.set()
 
-    async def _connect_once(self) -> None:
+    async def _connect(self, reason: str) -> None:
         loop = asyncio.get_running_loop()
         confs = await pyatv.scan(loop, hosts=[self._ip], timeout=5.0)
         if not confs:
@@ -90,79 +89,73 @@ class Daemon:
             service.credentials = self._companion_credentials
 
         atv = await pyatv.connect(conf, loop)
-        atv.listener = _DevicePushListener(self)
-        atv.power.listener = _PowerPushListener(self)
+        atv.listener = _DeviceNoopListener()
+        atv.power.listener = _PowerPushListener()
         self._atv = atv
-        self._backoff = 1.0
 
-        emit({"state": state_label(atv.power.power_state), "reason": "initial"})
+        emit({"state": state_label(atv.power.power_state), "reason": reason})
 
-    async def _heartbeat(self) -> None:
-        # Re-emits current state periodically so the Node side can verify the
-        # session is alive. Cost is near zero: pyatv keeps state cached from
-        # the push channel, this is just a property read on a live connection.
-        while not self._reconnect_event.is_set():
-            await asyncio.sleep(self._heartbeat_seconds)
-            if self._atv is None or self._reconnect_event.is_set():
-                return
+    async def _close(self) -> None:
+        atv = self._atv
+        self._atv = None
+        if atv is not None:
             try:
-                emit({
-                    "state": state_label(self._atv.power.power_state),
-                    "reason": "heartbeat",
-                })
-            except Exception as exc:  # noqa: BLE001 - intentionally broad
-                emit({"error": f"heartbeat failed: {exc}", "reason": "heartbeat_error"})
-                self.schedule_reconnect()
-                return
+                atv.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _wait(self, seconds: float) -> bool:
+        """Sleep up to `seconds` or until stop. Returns True if stop was requested."""
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     async def run(self) -> None:
-        while True:
-            try:
-                await self._connect_once()
-                self._reconnect_event.clear()
-                await self._heartbeat()
-                await self._reconnect_event.wait()
-            except Exception as exc:  # noqa: BLE001
-                emit({"error": f"connect failed: {exc}", "reason": "connect_error"})
-            finally:
-                if self._atv is not None:
-                    try:
-                        self._atv.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    self._atv = None
+        first = True
+        backoff = 1.0
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    await self._connect("initial" if first else "refresh")
+                except Exception as exc:  # noqa: BLE001
+                    emit({"error": f"connect failed: {exc}", "reason": "connect_error"})
+                    await self._close()
+                    if await self._wait(backoff):
+                        return
+                    backoff = min(backoff * 2, 60.0)
+                    continue
 
-            await asyncio.sleep(self._backoff)
-            self._backoff = min(self._backoff * 2, 60.0)
+                first = False
+                backoff = 1.0
+
+                if await self._wait(self._refresh_seconds):
+                    return
+                await self._close()
+        finally:
+            await self._close()
 
 
 async def amain(args: argparse.Namespace) -> None:
     daemon = Daemon(
         ip=args.ip,
         companion_credentials=args.companion_credentials,
-        heartbeat_seconds=args.heartbeat_seconds,
+        refresh_seconds=args.refresh_seconds,
     )
 
     loop = asyncio.get_running_loop()
-    stop_event = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, stop_event.set)
+            loop.add_signal_handler(sig, daemon.request_stop)
         except NotImplementedError:
-            # not supported on some platforms, ignore
             pass
 
-    run_task = asyncio.create_task(daemon.run())
-    stop_task = asyncio.create_task(stop_event.wait())
-    done, pending = await asyncio.wait(
-        {run_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
-    )
-    for t in pending:
-        t.cancel()
+    await daemon.run()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="pyatv long-lived power-state daemon")
+    parser = argparse.ArgumentParser(description="pyatv Apple TV power-state daemon")
     parser.add_argument("--ip", required=True, help="Apple TV IP address")
     parser.add_argument(
         "--companion-credentials",
@@ -170,10 +163,10 @@ def main() -> int:
         help="Companion-protocol credentials string from pyatv pairing",
     )
     parser.add_argument(
-        "--heartbeat-seconds",
+        "--refresh-seconds",
         type=float,
-        default=30.0,
-        help="Interval for heartbeat state re-emit (safety net; cheap, 0 network)",
+        default=10.0,
+        help="Interval between forced reconnects that re-read live power state",
     )
     args = parser.parse_args()
 
