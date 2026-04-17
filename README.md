@@ -28,8 +28,7 @@ Homebridge plugin that detects the power state of an Apple TV using [pyatv](http
       "name": "Projector",
       "ip": "192.168.1.31",
       "credentials": "<from pairing>",
-      "pollingInterval": 3,
-      "debounceDuration": 2
+      "debounceDuration": 1
     }
   ]
 }
@@ -40,8 +39,7 @@ Homebridge plugin that detects the power state of an Apple TV using [pyatv](http
 | `name` | — | Accessory name in HomeKit |
 | `ip` | — | Apple TV IP address |
 | `credentials` | — | Companion credentials from pairing |
-| `pollingInterval` | `10` | Seconds between power state checks (min: 3) |
-| `debounceDuration` | `5` | Seconds to confirm a state change (min: 1) |
+| `debounceDuration` | `1` | Seconds after a change during which flips are suppressed to filter transient flaps (min: 1) |
 
 ## Manual pairing (CLI)
 

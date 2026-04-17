@@ -29,6 +29,7 @@ export class AppleTvDetector extends EventEmitter {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private respawnTimer: ReturnType<typeof setTimeout> | null = null;
   private debouncedState: boolean | null = null;
+  private pendingState: boolean | null = null;
   private pythonMissing = false;
   private stopped = false;
   private backoffMs = INITIAL_BACKOFF_MS;
@@ -46,7 +47,7 @@ export class AppleTvDetector extends EventEmitter {
 
   start(): void {
     this.log.info(
-      `Starting Apple TV power state detection for ${this.ip} (push-based via pyatv daemon, debounce: ${this.debounceDuration / 1000}s)`,
+      `Starting Apple TV power state detection for ${this.ip} (push-based via pyatv daemon, flap-guard: ${this.debounceDuration / 1000}s)`,
     );
     this.stopped = false;
     this.spawnDaemon();
@@ -58,6 +59,7 @@ export class AppleTvDetector extends EventEmitter {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    this.pendingState = null;
     if (this.respawnTimer) {
       clearTimeout(this.respawnTimer);
       this.respawnTimer = null;
@@ -190,25 +192,31 @@ export class AppleTvDetector extends EventEmitter {
       return;
     }
 
-    if (newState === this.debouncedState) {
-      if (this.debounceTimer) {
-        clearTimeout(this.debounceTimer);
-        this.debounceTimer = null;
-      }
+    if (this.debounceTimer) {
+      // Inside the flap-guard window after a recent transition. Buffer the
+      // latest observation; we reconcile when the window closes so A→B→A
+      // flaps collapse to nothing while B→A→B still lands on the real state.
+      this.pendingState = newState;
       return;
     }
 
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-    }
+    if (newState === this.debouncedState) return;
+
+    this.debouncedState = newState;
+    this.pendingState = null;
+    this.emit("stateChange", { isPoweredOn: newState } satisfies AppleTvStateChange);
 
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
-      this.debouncedState = newState;
-      this.log.debug(
-        `Apple TV ${this.ip} debounced state change: ${newState ? "On" : "Off"}`,
-      );
-      this.emit("stateChange", { isPoweredOn: newState } satisfies AppleTvStateChange);
+      const pending = this.pendingState;
+      this.pendingState = null;
+      if (pending !== null && pending !== this.debouncedState) {
+        this.debouncedState = pending;
+        this.log.debug(
+          `Apple TV ${this.ip} reconciled post-flap state: ${pending ? "On" : "Off"}`,
+        );
+        this.emit("stateChange", { isPoweredOn: pending } satisfies AppleTvStateChange);
+      }
     }, this.debounceDuration);
   }
 }

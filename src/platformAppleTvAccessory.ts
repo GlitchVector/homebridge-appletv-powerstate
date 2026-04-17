@@ -29,7 +29,7 @@ export class PlatformAppleTvAccessory {
     const detector = new AppleTvDetector(
       device.ip,
       device.credentials,
-      (device.debounceDuration || 5) * 1000,
+      (device.debounceDuration || 1) * 1000,
       this.platform.log,
     );
 

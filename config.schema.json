@@ -38,11 +38,11 @@
               "description": "Credentials from pyatv pairing. Use the Custom UI to pair your Apple TV."
             },
             "debounceDuration": {
-              "title": "Debounce Duration (seconds)",
+              "title": "Flap-guard Duration (seconds)",
               "type": "integer",
-              "default": 5,
+              "default": 1,
               "minimum": 1,
-              "description": "Seconds to wait before confirming a state change"
+              "description": "Window after a state change during which flips are suppressed to filter transient flaps"
             }
           }
         }
