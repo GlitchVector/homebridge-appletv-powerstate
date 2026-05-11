@@ -41,6 +41,8 @@ export class AppleTvDetector extends EventEmitter {
     private readonly credentials: string | undefined,
     private readonly debounceDuration: number,
     private readonly log: Logging,
+    private readonly identifier?: string,
+    private readonly companionPort?: number,
   ) {
     super();
   }
@@ -85,6 +87,17 @@ export class AppleTvDetector extends EventEmitter {
     const args: string[] = ["-u", DAEMON_PATH, "--ip", this.ip];
     if (this.credentials) {
       args.push("--companion-credentials", this.credentials);
+    }
+    if (this.identifier) {
+      // When both identifier+credentials are provided the daemon skips
+      // mDNS scan and connects directly via Companion. Required when
+      // Homebridge runs on a different VLAN than the Apple TV — multicast
+      // mDNS does not cross VLAN boundaries (RFC 6762 link-local), so the
+      // default scan path returns "no Apple TV found".
+      args.push("--identifier", this.identifier);
+    }
+    if (this.companionPort) {
+      args.push("--companion-port", String(this.companionPort));
     }
 
     this.log.debug(`Spawning pyatv daemon: python3 ${args.join(" ")}`);

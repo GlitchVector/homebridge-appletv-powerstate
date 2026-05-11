@@ -31,6 +31,8 @@ export class PlatformAppleTvAccessory {
       device.credentials,
       (device.debounceDuration || 1) * 1000,
       this.platform.log,
+      device.identifier,
+      device.companionPort,
     );
 
     detector.on("stateChange", ({ isPoweredOn }: AppleTvStateChange) => {

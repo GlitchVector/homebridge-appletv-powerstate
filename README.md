@@ -39,6 +39,8 @@ Homebridge plugin that detects the power state of an Apple TV using [pyatv](http
 | `name` | — | Accessory name in HomeKit |
 | `ip` | — | Apple TV IP address |
 | `credentials` | — | Companion credentials from pairing |
+| `identifier` | — | Apple TV identifier (UUID-shaped). Optional; required for cross-VLAN setups, see below |
+| `companionPort` | `49153` | Companion-protocol TCP port. Optional; only used together with `identifier` |
 | `debounceDuration` | `1` | Seconds after a change during which flips are suppressed to filter transient flaps (min: 1) |
 
 ## Manual pairing (CLI)
@@ -47,6 +49,26 @@ Homebridge plugin that detects the power state of an Apple TV using [pyatv](http
 atvremote scan
 atvremote -s <ip> --protocol companion pair
 ```
+
+## Cross-VLAN / different-subnet setups
+
+By default the daemon runs `pyatv.scan(hosts=[ip])` before connecting. That call uses unicast mDNS, and most Apple TV mDNS responders **refuse off-link queries** (RFC 6762 link-local rule). If Homebridge runs on a different VLAN/subnet than the Apple TV — common with isolated wifi VLANs — the scan returns "no Apple TV found" even though `ping <ip>` works fine.
+
+**Fix:** provide `identifier` (and optionally `companionPort`) in the device config. When both `identifier` and `credentials` are set, the daemon constructs the pyatv config directly and connects via Companion without ever calling `pyatv.scan` — bypassing the mDNS dependency entirely.
+
+To get the identifier, run `atvremote scan` from a host that **is** on the same VLAN as the Apple TV (your phone/laptop on its wifi works). The output looks like:
+
+```
+Name: Livingroom
+Address: 192.168.5.31
+Identifiers:
+ - 3A9926A3-228C-4C30-AA5C-A8E85495EC68      ← use this one (UUID-shaped, most stable)
+ - 3A:99:26:A3:22:8C
+Services:
+ - Protocol: Companion, Port: 49153, Pairing: Mandatory
+```
+
+Then pair from the same host (`atvremote --id <identifier> pair --protocol companion`) and copy the printed credentials hex into the plugin config alongside the identifier.
 
 ## License
 

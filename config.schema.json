@@ -37,6 +37,17 @@
               "type": "string",
               "description": "Credentials from pyatv pairing. Use the Custom UI to pair your Apple TV."
             },
+            "identifier": {
+              "title": "Apple TV Identifier",
+              "type": "string",
+              "description": "Optional. Apple TV identifier (e.g. 3A9926A3-228C-4C30-AA5C-A8E85495EC68). When provided alongside Credentials, the daemon connects directly via Companion and skips mDNS discovery — required if Homebridge runs on a different VLAN/subnet than the Apple TV (mDNS multicast cannot cross VLAN boundaries). Find it in the output of `atvremote scan` (the long UUID-shaped Identifier)."
+            },
+            "companionPort": {
+              "title": "Companion Port",
+              "type": "integer",
+              "default": 49153,
+              "description": "Optional. Override the Companion-protocol TCP port if the default 49153 doesn't match your Apple TV. Only used together with Identifier (scan-skip fast path); the regular scan-based path discovers this automatically."
+            },
             "debounceDuration": {
               "title": "Flap-guard Duration (seconds)",
               "type": "integer",

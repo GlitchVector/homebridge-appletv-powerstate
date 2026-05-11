@@ -65,10 +65,14 @@ class Daemon:
         ip: str,
         companion_credentials: Optional[str],
         refresh_seconds: float,
+        identifier: Optional[str] = None,
+        companion_port: int = 49153,
     ) -> None:
         self._ip = ip
         self._companion_credentials = companion_credentials
         self._refresh_seconds = refresh_seconds
+        self._identifier = identifier
+        self._companion_port = companion_port
         self._atv: Optional[AppleTV] = None
         self._stop_event = asyncio.Event()
 
@@ -77,16 +81,38 @@ class Daemon:
 
     async def _connect(self, reason: str) -> None:
         loop = asyncio.get_running_loop()
-        confs = await pyatv.scan(loop, hosts=[self._ip], timeout=5.0)
-        if not confs:
-            raise RuntimeError(f"no Apple TV found at {self._ip}")
-        conf = confs[0]
 
-        if self._companion_credentials:
-            service = conf.get_service(Protocol.Companion)
-            if service is None:
-                raise RuntimeError("Apple TV advertises no Companion service")
-            service.credentials = self._companion_credentials
+        if self._identifier and self._companion_credentials:
+            # Fast path: skip mDNS scan when identifier+credentials are known.
+            # mDNS multicast does not cross VLAN boundaries; without this,
+            # Homebridge running on a different VLAN than the Apple TV cannot
+            # discover it. With identifier+credentials we can build the config
+            # ourselves and connect directly via Companion (port 49153 default).
+            import ipaddress
+            from pyatv import conf as _conf
+            config = _conf.AppleTV(
+                address=ipaddress.IPv4Address(self._ip),
+                name="AppleTV",
+            )
+            service = _conf.ManualService(
+                identifier=self._identifier,
+                protocol=Protocol.Companion,
+                port=self._companion_port,
+                properties={},
+                credentials=self._companion_credentials,
+            )
+            config.add_service(service)
+            conf = config
+        else:
+            confs = await pyatv.scan(loop, hosts=[self._ip], timeout=5.0)
+            if not confs:
+                raise RuntimeError(f"no Apple TV found at {self._ip}")
+            conf = confs[0]
+            if self._companion_credentials:
+                service = conf.get_service(Protocol.Companion)
+                if service is None:
+                    raise RuntimeError("Apple TV advertises no Companion service")
+                service.credentials = self._companion_credentials
 
         atv = await pyatv.connect(conf, loop)
         atv.listener = _DeviceNoopListener()
@@ -142,6 +168,8 @@ async def amain(args: argparse.Namespace) -> None:
         ip=args.ip,
         companion_credentials=args.companion_credentials,
         refresh_seconds=args.refresh_seconds,
+        identifier=args.identifier,
+        companion_port=args.companion_port,
     )
 
     loop = asyncio.get_running_loop()
@@ -161,6 +189,17 @@ def main() -> int:
         "--companion-credentials",
         default=None,
         help="Companion-protocol credentials string from pyatv pairing",
+    )
+    parser.add_argument(
+        "--identifier",
+        default=None,
+        help="Apple TV identifier (skips mDNS scan when provided with --companion-credentials)",
+    )
+    parser.add_argument(
+        "--companion-port",
+        type=int,
+        default=49153,
+        help="Companion-protocol TCP port (default 49153; only used in scan-skip fast path)",
     )
     parser.add_argument(
         "--refresh-seconds",
