@@ -73,21 +73,55 @@ class Daemon:
         self._refresh_seconds = refresh_seconds
         self._identifier = identifier
         self._companion_port = companion_port
+        # Apple TV rotates its Companion TCP port across reboots (tvOS 26 was
+        # observed jumping from 49153 to 51255). Cache the port discovered
+        # via unicast mDNS so the 2s reconnect loop stays cheap, and
+        # invalidate on any connect failure so we re-probe on the next try.
+        self._discovered_port: Optional[int] = None
         self._atv: Optional[AppleTV] = None
         self._stop_event = asyncio.Event()
 
     def request_stop(self) -> None:
         self._stop_event.set()
 
+    async def _probe_companion_port(self) -> Optional[int]:
+        """Discover the current Companion port via multicast mDNS scan.
+
+        ``pyatv.scan`` defaults to multicast (no ``hosts=`` argument). Apple
+        TVs in deep sleep don't answer unicast UDP/5353 probes, but they
+        DO respond to multicast queries — and a multicast-relay daemon on
+        a host with link presence on both VLANs forwards those queries and
+        responses across, so this works cross-VLAN as long as such a relay
+        is running on at least one host on the Apple TV's link.
+        """
+        try:
+            confs = await pyatv.scan(
+                asyncio.get_running_loop(),
+                identifier=self._identifier,
+                timeout=4.0,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if not confs:
+            return None
+        svc = confs[0].get_service(Protocol.Companion)
+        if svc is None or not svc.port:
+            return None
+        return svc.port
+
     async def _connect(self, reason: str) -> None:
         loop = asyncio.get_running_loop()
 
         if self._identifier and self._companion_credentials:
-            # Fast path: skip mDNS scan when identifier+credentials are known.
-            # mDNS multicast does not cross VLAN boundaries; without this,
-            # Homebridge running on a different VLAN than the Apple TV cannot
-            # discover it. With identifier+credentials we can build the config
-            # ourselves and connect directly via Companion (port 49153 default).
+            # Fast path: skip the full mDNS scan-and-pair flow when
+            # identifier+credentials are known. We still need the current
+            # Companion port, which rotates across Apple TV reboots — probe
+            # it via unicast scan once and cache it. Invalidated on failure
+            # by the outer run() loop so we re-probe on rotation.
+            if self._discovered_port is None:
+                self._discovered_port = await self._probe_companion_port()
+            port = self._discovered_port or self._companion_port
+
             import ipaddress
             from pyatv import conf as _conf
             config = _conf.AppleTV(
@@ -97,7 +131,7 @@ class Daemon:
             service = _conf.ManualService(
                 identifier=self._identifier,
                 protocol=Protocol.Companion,
-                port=self._companion_port,
+                port=port,
                 properties={},
                 credentials=self._companion_credentials,
             )
@@ -148,6 +182,10 @@ class Daemon:
                 except Exception as exc:  # noqa: BLE001
                     emit({"error": f"connect failed: {exc}", "reason": "connect_error"})
                     await self._close()
+                    # Invalidate the cached port — most common cause of a
+                    # connect failure after an Apple TV reboot is a port
+                    # rotation, and we want the next _connect() to re-probe.
+                    self._discovered_port = None
                     if await self._wait(backoff):
                         return
                     backoff = min(backoff * 2, 60.0)
